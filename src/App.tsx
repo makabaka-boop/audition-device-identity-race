@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import { useAuditionRecorder } from './hooks/useAuditionRecorder'
+import type { MediaDeviceInfoLite } from './hooks/useAuditionRecorder'
 import {
   MARKER_LABEL_MAX_LENGTH,
   type CaptureMode,
+  type DeviceRef,
   type RecorderStatus,
   type Take,
   type TakeMarker,
@@ -33,6 +35,53 @@ function formatTime(ts: number): string {
   const d = new Date(ts)
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+/** 设备身份的稳定展示名：空 id（系统默认）或空标签给统一回退 */
+function deviceLabel(device: DeviceRef | null): string {
+  if (!device) return '—'
+  return device.label || (device.id ? `设备 ${device.id.slice(0, 4)}` : '系统默认设备')
+}
+
+/**
+ * 设备下拉的选项与当前值：
+ * - 空闲：值为待选设备，选项来自最新清单（外加一个缺设备时的默认项）；
+ * - 非空闲：值恒为本次开拍冻结的实际设备。即便热插拔已让它离开最新清单，
+ *   也补一个“（本次已锁定）”选项，使展示与实际采集设备严格一致。
+ */
+function deviceSelectModel(opts: {
+  locked: boolean
+  lockedDevice: DeviceRef | null
+  list: MediaDeviceInfoLite[]
+  selectedId: string
+}): { value: string; options: Array<{ value: string; label: string }> } {
+  if (opts.locked) {
+    const dev = opts.lockedDevice
+    const value = dev?.id ?? ''
+    const baseLabel = dev ? deviceLabel(dev) : '系统默认设备'
+    // 选项来自最新清单，但恒把冻结设备置顶并用开拍时冻结的名称展示
+    // （即使清单中同 id 的标签已变化，也以冻结名为准，与实际采集一致）。
+    const options = opts.list
+      .filter((d) => d.deviceId !== value)
+      .map((d) => ({ value: d.deviceId, label: d.label }))
+    options.unshift({ value, label: `${baseLabel}（本次已锁定）` })
+    return { value, options }
+  }
+  const options = opts.list.map((d) => ({
+    value: d.deviceId,
+    label: d.label,
+  }))
+  const known = options.some((o) => o.value === opts.selectedId)
+  if (!known) {
+    // 待选 id 暂不在清单（枚举往返中）：补占位，绝不让下拉空白
+    options.unshift({
+      value: opts.selectedId,
+      label: opts.selectedId
+        ? `设备 ${opts.selectedId.slice(0, 4)}（清单刷新中）`
+        : '系统默认设备',
+    })
+  }
+  return { value: opts.selectedId, options }
 }
 
 /** 标记的成片内时间：mm:ss.mmm（毫秒精度，与播放器 currentTime 对齐） */
@@ -154,6 +203,22 @@ function TakeReplay({
         <span className="take-info">
           {MODE_TEXT[take.mode]} · {formatDuration(take.durationMs)} ·{' '}
           {formatTime(take.createdAt)}
+        </span>
+        <span
+          className="take-devices"
+          data-take-video-device={take.videoDevice?.id ?? ''}
+          data-take-audio-device={take.audioDevice?.id ?? ''}
+        >
+          {take.mode !== 'audio-only' && (
+            <span className="take-device">
+              摄像头：{deviceLabel(take.videoDevice)}
+            </span>
+          )}
+          {take.mode !== 'video-only' && (
+            <span className="take-device">
+              麦克风：{deviceLabel(take.audioDevice)}
+            </span>
+          )}
         </span>
         <span className={`take-reason reason-${take.reason}`}>
           {take.reason === 'user' ? '手动停止' : '设备中断'}
@@ -302,6 +367,10 @@ export default function App() {
     audioDeviceId,
     setVideoDeviceId,
     setAudioDeviceId,
+    activeVideoDevice,
+    activeAudioDevice,
+    videoNotice,
+    audioNotice,
     mode,
     modes,
     mimeByMode,
@@ -332,6 +401,20 @@ export default function App() {
   const needsVideo = displayMode !== 'audio-only'
   const needsAudio = displayMode !== 'video-only'
   const displayMime = activeMimeType ?? mimeByMode[mode]
+
+  // 非空闲时下拉恒指向本次冻结设备；空闲时指向待选设备
+  const videoSelect = deviceSelectModel({
+    locked: !canSwitchDevice,
+    lockedDevice: activeVideoDevice,
+    list: videoDevices,
+    selectedId: videoDeviceId,
+  })
+  const audioSelect = deviceSelectModel({
+    locked: !canSwitchDevice,
+    lockedDevice: activeAudioDevice,
+    list: audioDevices,
+    selectedId: audioDeviceId,
+  })
 
   const startingText =
     displayMode === 'audio-only'
@@ -403,53 +486,86 @@ export default function App() {
 
           <div className="device-row">
             {needsVideo && (
-              <label>
-                摄像头
-                <select
-                  value={videoDeviceId}
-                  onChange={(e) => setVideoDeviceId(e.target.value)}
-                  disabled={!canSwitchDevice}
-                >
-                  {videoDevices.length === 0 && (
-                    <option value="">默认设备</option>
-                  )}
-                  {videoDevices.map((d) => (
-                    <option
-                      key={d.deviceId || 'default'}
-                      value={d.deviceId}
-                    >
-                      {d.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <div className="device-field">
+                <label>
+                  摄像头
+                  <select
+                    value={videoSelect.value}
+                    onChange={(e) => setVideoDeviceId(e.target.value)}
+                    disabled={!canSwitchDevice}
+                    data-device-kind="videoinput"
+                  >
+                    {videoSelect.options.length === 0 && (
+                      <option value="">默认设备</option>
+                    )}
+                    {videoSelect.options.map((o) => (
+                      <option key={o.value || 'default'} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {videoNotice && (
+                  <p
+                    className="device-notice"
+                    role="status"
+                    data-device-notice="videoinput"
+                  >
+                    {videoNotice}
+                  </p>
+                )}
+              </div>
             )}
             {needsAudio && (
-              <label>
-                麦克风
-                <select
-                  value={audioDeviceId}
-                  onChange={(e) => setAudioDeviceId(e.target.value)}
-                  disabled={!canSwitchDevice}
-                >
-                  {audioDevices.length === 0 && (
-                    <option value="">默认设备</option>
-                  )}
-                  {audioDevices.map((d) => (
-                    <option
-                      key={d.deviceId || 'default'}
-                      value={d.deviceId}
-                    >
-                      {d.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <div className="device-field">
+                <label>
+                  麦克风
+                  <select
+                    value={audioSelect.value}
+                    onChange={(e) => setAudioDeviceId(e.target.value)}
+                    disabled={!canSwitchDevice}
+                    data-device-kind="audioinput"
+                  >
+                    {audioSelect.options.length === 0 && (
+                      <option value="">默认设备</option>
+                    )}
+                    {audioSelect.options.map((o) => (
+                      <option key={o.value || 'default'} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {audioNotice && (
+                  <p
+                    className="device-notice"
+                    role="status"
+                    data-device-notice="audioinput"
+                  >
+                    {audioNotice}
+                  </p>
+                )}
+              </div>
             )}
           </div>
 
           {!canSwitchDevice && (
-            <p className="hint">录制进行中，设备已锁定；停止后才可切换。</p>
+            <div className="locked-devices" data-locked-devices>
+              <p className="hint">录制进行中，设备已锁定；停止后才可切换。</p>
+              <p className="locked-device-line">
+                本次实际采集：
+                {needsVideo && (
+                  <span data-locked-video={activeVideoDevice?.id ?? ''}>
+                    摄像头 {deviceLabel(activeVideoDevice)}
+                  </span>
+                )}
+                {needsAudio && (
+                  <span data-locked-audio={activeAudioDevice?.id ?? ''}>
+                    麦克风 {deviceLabel(activeAudioDevice)}
+                  </span>
+                )}
+              </p>
+            </div>
           )}
 
           <div className="mime-line">

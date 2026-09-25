@@ -654,6 +654,106 @@ describe('采集计划只请求所需轨道', () => {
   })
 })
 
+describe('设备身份随开拍冻结并随成片固化', () => {
+  it('av：deviceId 与展示名在 starting 即可读，成片携带同一身份', async () => {
+    const h = makeHarness({ manualPermissions: true })
+    h.recorder.start({
+      mode: 'av',
+      videoDeviceId: 'cam-A',
+      audioDeviceId: 'mic-A',
+      videoDeviceLabel: '前台机位',
+      audioDeviceLabel: '领夹麦',
+    })
+    expect(h.recorder.getStatus()).toBe('starting')
+    // 授权未决时冻结身份已可读（界面据此展示，不依赖枚举清单）
+    expect(h.recorder.getActiveVideoDevice()).toEqual({
+      id: 'cam-A',
+      label: '前台机位',
+    })
+    expect(h.recorder.getActiveAudioDevice()).toEqual({
+      id: 'mic-A',
+      label: '领夹麦',
+    })
+    // 约束只认冻结的 id
+    expect(h.calls[0]).toEqual(expectedConstraints('av', 'cam-A', 'mic-A'))
+
+    h.media.grant()
+    await h.flush()
+    const rec = h.lastRecorder()
+    // 录制中身份不变
+    expect(h.recorder.getActiveVideoDevice()?.id).toBe('cam-A')
+    rec.emitData(['frozen-identity'])
+    stopAndEmit(h, rec)
+    expect(h.takes[0].videoDevice).toEqual({ id: 'cam-A', label: '前台机位' })
+    expect(h.takes[0].audioDevice).toEqual({ id: 'mic-A', label: '领夹麦' })
+    // 回 idle 后活动身份清空
+    expect(h.recorder.getActiveVideoDevice()).toBeNull()
+    expect(h.recorder.getActiveAudioDevice()).toBeNull()
+  })
+
+  it('仅视频/仅音频：与模式无关的设备身份为 null，但传入 id 也不进入约束', async () => {
+    const hVideo = makeHarness()
+    const recV = hVideo.recorder
+    recV.start({
+      mode: 'video-only',
+      videoDeviceId: 'cam-only',
+      videoDeviceLabel: '特写机位',
+      audioDeviceId: 'mic-ignored',
+      audioDeviceLabel: '不应出现',
+    })
+    await hVideo.flush()
+    expect(recV.getActiveVideoDevice()).toEqual({
+      id: 'cam-only',
+      label: '特写机位',
+    })
+    expect(recV.getActiveAudioDevice()).toBeNull()
+    const rv = hVideo.lastRecorder()
+    rv.emitData(['v'])
+    stopAndEmit(hVideo, rv)
+    expect(hVideo.takes[0].videoDevice).toEqual({
+      id: 'cam-only',
+      label: '特写机位',
+    })
+    expect(hVideo.takes[0].audioDevice).toBeNull()
+
+    const hAudio = makeHarness()
+    const recA = hAudio.recorder
+    recA.start({
+      mode: 'audio-only',
+      audioDeviceId: 'mic-only',
+      audioDeviceLabel: '吊杆麦',
+      videoDeviceId: 'cam-ignored',
+    })
+    await hAudio.flush()
+    expect(recA.getActiveAudioDevice()).toEqual({
+      id: 'mic-only',
+      label: '吊杆麦',
+    })
+    expect(recA.getActiveVideoDevice()).toBeNull()
+    const ra = hAudio.lastRecorder()
+    ra.emitData(['a'])
+    stopAndEmit(hAudio, ra)
+    expect(hAudio.takes[0].audioDevice).toEqual({
+      id: 'mic-only',
+      label: '吊杆麦',
+    })
+    expect(hAudio.takes[0].videoDevice).toBeNull()
+  })
+
+  it('未给设备 id/label：冻结为系统默认（id 空串），约束退化为 true', async () => {
+    const h = makeHarness()
+    h.recorder.start({ mode: 'av' })
+    await h.flush()
+    expect(h.recorder.getActiveVideoDevice()).toEqual({ id: '', label: '' })
+    expect(h.calls[0]).toEqual({ video: true, audio: true })
+    const rec = h.lastRecorder()
+    rec.emitData(['default-dev'])
+    stopAndEmit(h, rec)
+    expect(h.takes[0].videoDevice?.id).toBe('')
+    expect(h.takes[0].audioDevice?.id).toBe('')
+  })
+})
+
 describe('开拍冻结（等待授权期间）', () => {
   it('点击开拍在权限申请前进入 starting 并冻结模式/MIME，授权后按冻结参数成片', async () => {
     const h = makeHarness({ manualPermissions: true })

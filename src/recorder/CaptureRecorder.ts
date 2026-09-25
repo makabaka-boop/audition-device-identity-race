@@ -6,8 +6,9 @@
  *    所有外部操作都做幂等保护，重复调用不会产生副作用。
  * 2. 三种采集模式（av 音视频 / video-only 仅视频 / audio-only 仅音频），
  *    各自按顺序探测一组 MIME；某组全不可用只禁用该模式，不影响其它模式。
- * 3. 开拍瞬间（申请权限之前）冻结模式、MIME 与设备选择：starting 期间
- *    外部的重复 start / 模式切换都无法改变取流约束、录制参数与成片类型，
+ * 3. 开拍瞬间（申请权限之前）冻结模式、MIME 与设备选择（设备 id 与展示名
+ *    一起冻结）：starting 期间外部的重复 start / 模式切换 / 设备热插拔与
+ *    迟到枚举都无法改变取流约束、录制参数、成片类型与本次展示的设备名称，
  *    直到回到 idle 才解锁。
  * 4. 采集计划只请求所需轨道：仅音频 video:false、仅视频 audio:false，
  *    缺少无关设备不算失败。
@@ -79,6 +80,16 @@ export type CaptureErrorCode =
   | 'stop-failed'
 
 /**
+ * 一次采集计划引用的设备身份。
+ * 开拍时随计划冻结：deviceId 决定取流约束（exact），label 供界面展示。
+ * id 为空字符串表示“系统默认设备”（约束退化为 true，不带 deviceId）。
+ */
+export interface DeviceRef {
+  id: string
+  label: string
+}
+
+/**
  * 停止后等待编码器 stop 事件（含晚到尾段）的宽限窗口。
  * 真实 UA 通常在下一 tick 内派发 stop；超过该窗口仍无任何落定信号
  * （recorder.stop() 抛错且未进入 inactive，或始终不发 stop 事件）时，
@@ -113,6 +124,13 @@ export interface Take {
   createdAt: number
   /** 回放用对象 URL，由内核/上层负责 revoke */
   url: string
+  /**
+   * 本条成片实际采集所用的设备身份（开拍瞬间随计划冻结）。
+   * 与该模式无关的轨道为 null：仅视频成片 audioDevice=null，
+   * 仅音频成片 videoDevice=null；id 为空串表示当时使用系统默认设备。
+   */
+  videoDevice: DeviceRef | null
+  audioDevice: DeviceRef | null
 }
 
 export interface RecorderDeps {
@@ -219,6 +237,9 @@ export interface StartOptions {
   mode?: CaptureMode
   videoDeviceId?: string
   audioDeviceId?: string
+  /** 所选设备在枚举清单中的展示名，随计划冻结供本次录制/成片展示 */
+  videoDeviceLabel?: string
+  audioDeviceLabel?: string
   /**
    * 可选的已授权流（UI 取流做预览时复用，避免二次授权弹窗/设备占用）。
    * 传入时录制器不再自行调用 getUserMedia，但模式/MIME 仍在调用前冻结。
@@ -243,8 +264,8 @@ export interface RecorderCallbacks {
 interface FrozenPlan {
   mode: CaptureMode
   mimeType: string
-  videoDeviceId?: string
-  audioDeviceId?: string
+  videoDevice: DeviceRef | null
+  audioDevice: DeviceRef | null
 }
 
 interface ActiveSession {
@@ -253,6 +274,9 @@ interface ActiveSession {
   recorder: MediaRecorderLike
   stream: MediaStreamLike
   mimeType: string
+  /** 本次实际采集所用设备（开拍时冻结；与模式无关的轨道为 null） */
+  videoDevice: DeviceRef | null
+  audioDevice: DeviceRef | null
   chunks: Blob[]
   startedAt: number
   accumulatedMs: number
@@ -360,6 +384,19 @@ export class CaptureRecorder {
     return this.active?.stream ?? null
   }
 
+  /**
+   * 当前进行中（含 starting/recording/paused/stopping）本次实际使用的设备。
+   * 与模式无关的轨道为 null；idle 时为 null。设备一旦在开拍时冻结，
+   * 之后的热插拔/迟到枚举都改不动它。
+   */
+  getActiveVideoDevice(): DeviceRef | null {
+    return this.active?.videoDevice ?? this.plan?.videoDevice ?? null
+  }
+
+  getActiveAudioDevice(): DeviceRef | null {
+    return this.active?.audioDevice ?? this.plan?.audioDevice ?? null
+  }
+
   start(options: StartOptions = {}): void {
     if (this.disposed) return
     // 重复 start：除 idle 外一律忽略（starting 中等待授权时的双击也被挡下，
@@ -377,14 +414,26 @@ export class CaptureRecorder {
       return
     }
 
-    // 只冻结本模式实际会用到的设备：不相关的设备选择一律不进入计划
-    const videoDeviceId =
-      mode === 'audio-only' ? undefined : (options.videoDeviceId ?? '') || undefined
-    const audioDeviceId =
-      mode === 'video-only' ? undefined : (options.audioDeviceId ?? '') || undefined
+    // 只冻结本模式实际会用到的设备：不相关的设备选择一律不进入计划。
+    // deviceId 与展示名同时冻结：授权等待/录制期间热插拔或迟到枚举，
+    // 都既改不动取流约束，也改不动本次录制显示的设备名称。
+    const videoDevice: DeviceRef | null =
+      mode === 'audio-only'
+        ? null
+        : {
+            id: (options.videoDeviceId ?? '') || '',
+            label: options.videoDeviceLabel ?? '',
+          }
+    const audioDevice: DeviceRef | null =
+      mode === 'video-only'
+        ? null
+        : {
+            id: (options.audioDeviceId ?? '') || '',
+            label: options.audioDeviceLabel ?? '',
+          }
 
     const session = ++this.sessionCounter
-    this.plan = { mode, mimeType, videoDeviceId, audioDeviceId }
+    this.plan = { mode, mimeType, videoDevice, audioDevice }
     // 先进入 starting 完成冻结，随后才申请权限
     this.setStatus('starting')
 
@@ -396,18 +445,20 @@ export class CaptureRecorder {
 
     // 采集计划只请求所需轨道：缺少无关设备（如仅视频时没有麦克风）
     // 不会形成约束，自然不算失败
+    const videoId = videoDevice?.id ?? ''
+    const audioId = audioDevice?.id ?? ''
     const constraints: MediaStreamConstraints = {
       video:
         mode === 'audio-only'
           ? false
-          : videoDeviceId
-            ? { deviceId: { exact: videoDeviceId } }
+          : videoId
+            ? { deviceId: { exact: videoId } }
             : true,
       audio:
         mode === 'video-only'
           ? false
-          : audioDeviceId
-            ? { deviceId: { exact: audioDeviceId } }
+          : audioId
+            ? { deviceId: { exact: audioId } }
             : true,
     }
 
@@ -464,6 +515,8 @@ export class CaptureRecorder {
       recorder,
       stream,
       mimeType: recorder.mimeType || mimeType,
+      videoDevice: plan.videoDevice,
+      audioDevice: plan.audioDevice,
       chunks: [],
       startedAt: now,
       accumulatedMs: 0,
@@ -749,6 +802,8 @@ export class CaptureRecorder {
     const chunks = a.chunks
     const interruptedMessage = a.interruptionMessage
     const forced = a.forcedByTimer
+    const videoDevice = a.videoDevice
+    const audioDevice = a.audioDevice
 
     this.teardownSession(a)
     this.active = null
@@ -785,6 +840,8 @@ export class CaptureRecorder {
       reason,
       createdAt: this.deps.now(),
       url: this.deps.createObjectURL(blob),
+      videoDevice,
+      audioDevice,
     }
     this.callbacks.onTake(take)
     this.callbacks.onSettled(reason)

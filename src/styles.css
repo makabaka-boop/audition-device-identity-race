@@ -139,6 +139,38 @@ body {
   gap: 10px;
 }
 
+.device-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.device-notice {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--warning, #b8860b);
+}
+
+.locked-devices {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.locked-device-line {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.locked-device-line span {
+  color: var(--text);
+}
+
 .mode-row {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -489,6 +521,21 @@ select:disabled {
 .take-info {
   font-size: 12px;
   color: var(--muted);
+}
+
+.take-devices {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.take-device {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
 }
 
 .take-reason {
