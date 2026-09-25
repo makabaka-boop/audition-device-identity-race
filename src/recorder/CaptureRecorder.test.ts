@@ -776,6 +776,45 @@ describe('开拍冻结（等待授权期间）', () => {
     await h.flush()
     expect(h.recorder.getStatus()).toBe('recording')
   })
+
+  it('冻结计划在 starting 起可读（含设备身份），落定/取消回 idle 后清空', async () => {
+    const h = makeHarness({ manualPermissions: true })
+    expect(h.recorder.getActivePlan()).toBeNull()
+
+    // starting 起即可读到冻结的设备身份；仅视频模式不冻结音频设备
+    h.recorder.start({ mode: 'video-only', videoDeviceId: 'cam9' })
+    expect(h.recorder.getActivePlan()).toEqual({
+      videoDeviceId: 'cam9',
+      audioDeviceId: undefined,
+    })
+
+    // 授权等待期间取消：计划清空，设备身份不再冻结
+    h.recorder.stop()
+    expect(h.recorder.getStatus()).toBe('idle')
+    expect(h.recorder.getActivePlan()).toBeNull()
+    // 首次请求迟到的授权被会话守卫丢弃（流立即释放，不产生会话）
+    h.media.grant()
+    await h.flush()
+    expect(h.recorder.getStatus()).toBe('idle')
+    expect(h.media.pending).toHaveLength(0)
+
+    // 完整录制一条：recording/paused 期间计划保持，落定回 idle 清空
+    h.recorder.start({ mode: 'av', videoDeviceId: 'cam9', audioDeviceId: 'mic9' })
+    h.media.grant()
+    await h.flush()
+    expect(h.recorder.getActivePlan()).toEqual({
+      videoDeviceId: 'cam9',
+      audioDeviceId: 'mic9',
+    })
+    h.recorder.pause()
+    expect(h.recorder.getActivePlan()?.videoDeviceId).toBe('cam9')
+    h.recorder.resume()
+    const rec = h.lastRecorder()
+    rec.emitData(['x'])
+    stopAndEmit(h, rec)
+    expect(h.recorder.getStatus()).toBe('idle')
+    expect(h.recorder.getActivePlan()).toBeNull()
+  })
 })
 
 describe('失败后模式能力与资源保留', () => {

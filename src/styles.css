@@ -274,6 +274,20 @@ select:disabled {
   font-size: 12px;
 }
 
+.device-notices {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.device-notice {
+  color: var(--warn);
+  background: rgba(210, 153, 34, 0.1);
+  border: 1px solid rgba(210, 153, 34, 0.4);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
 .error-box {
   background: rgba(229, 83, 75, 0.12);
   border: 1px solid rgba(229, 83, 75, 0.5);

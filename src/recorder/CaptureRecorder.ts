@@ -360,6 +360,22 @@ export class CaptureRecorder {
     return this.active?.stream ?? null
   }
 
+  /**
+   * 开拍瞬间冻结的设备选择（starting 起生效，回 idle 为 null）。
+   * 某轨道为 undefined 表示该轨道不指定设备（用系统默认）。
+   * UI 据此让“本次录制展示的设备”始终等于实际采集设备，
+   * 与录制期间可能被热插拔改写的待选设备清单脱钩。
+   */  getActivePlan(): {
+    videoDeviceId?: string
+    audioDeviceId?: string
+  } | null {
+    if (!this.plan) return null
+    return {
+      videoDeviceId: this.plan.videoDeviceId,
+      audioDeviceId: this.plan.audioDeviceId,
+    }
+  }
+
   start(options: StartOptions = {}): void {
     if (this.disposed) return
     // 重复 start：除 idle 外一律忽略（starting 中等待授权时的双击也被挡下，

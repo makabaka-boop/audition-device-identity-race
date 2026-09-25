@@ -307,6 +307,9 @@ export default function App() {
     mimeByMode,
     activeMode,
     activeMimeType,
+    activePlan,
+    deviceNotices,
+    labelForDevice,
     setMode,
     takes,
     selectedTake,
@@ -332,6 +335,23 @@ export default function App() {
   const needsVideo = displayMode !== 'audio-only'
   const needsAudio = displayMode !== 'video-only'
   const displayMime = activeMimeType ?? mimeByMode[mode]
+  // 进行中显示冻结计划里的实际采集设备；空闲时显示待选设备。
+  // 热插拔刷新的清单不得让“本次录制展示的设备”与采集设备脱节。
+  const frozen = activePlan !== null
+  const displayVideoDeviceId = frozen
+    ? (activePlan.videoDeviceId ?? '')
+    : videoDeviceId
+  const displayAudioDeviceId = frozen
+    ? (activePlan.audioDeviceId ?? '')
+    : audioDeviceId
+  // 展示的设备已不在最新清单（录制中断开 / 枚举失败）：补占位项，
+  // 让下拉框始终显示本次实际采集的设备名而不是空白或别的设备
+  const videoMissing =
+    displayVideoDeviceId !== '' &&
+    !videoDevices.some((d) => d.deviceId === displayVideoDeviceId)
+  const audioMissing =
+    displayAudioDeviceId !== '' &&
+    !audioDevices.some((d) => d.deviceId === displayAudioDeviceId)
 
   const startingText =
     displayMode === 'audio-only'
@@ -406,13 +426,18 @@ export default function App() {
               <label>
                 摄像头
                 <select
-                  value={videoDeviceId}
+                  value={displayVideoDeviceId}
                   onChange={(e) => setVideoDeviceId(e.target.value)}
                   disabled={!canSwitchDevice}
                 >
                   {videoDevices.length === 0 && (
                     <option value="">默认设备</option>
                   )}
+                  {frozen &&
+                    videoDevices.length > 0 &&
+                    displayVideoDeviceId === '' && (
+                      <option value="">系统默认设备</option>
+                    )}
                   {videoDevices.map((d) => (
                     <option
                       key={d.deviceId || 'default'}
@@ -421,6 +446,13 @@ export default function App() {
                       {d.label}
                     </option>
                   ))}
+                  {videoMissing && (
+                    <option value={displayVideoDeviceId}>
+                      {labelForDevice(displayVideoDeviceId) ??
+                        `摄像头 ${displayVideoDeviceId.slice(0, 4)}`}
+                      （已断开）
+                    </option>
+                  )}
                 </select>
               </label>
             )}
@@ -428,13 +460,18 @@ export default function App() {
               <label>
                 麦克风
                 <select
-                  value={audioDeviceId}
+                  value={displayAudioDeviceId}
                   onChange={(e) => setAudioDeviceId(e.target.value)}
                   disabled={!canSwitchDevice}
                 >
                   {audioDevices.length === 0 && (
                     <option value="">默认设备</option>
                   )}
+                  {frozen &&
+                    audioDevices.length > 0 &&
+                    displayAudioDeviceId === '' && (
+                      <option value="">系统默认设备</option>
+                    )}
                   {audioDevices.map((d) => (
                     <option
                       key={d.deviceId || 'default'}
@@ -443,10 +480,31 @@ export default function App() {
                       {d.label}
                     </option>
                   ))}
+                  {audioMissing && (
+                    <option value={displayAudioDeviceId}>
+                      {labelForDevice(displayAudioDeviceId) ??
+                        `麦克风 ${displayAudioDeviceId.slice(0, 4)}`}
+                      （已断开）
+                    </option>
+                  )}
                 </select>
               </label>
             )}
           </div>
+
+          {deviceNotices.length > 0 && (
+            <div className="device-notices">
+              {deviceNotices.map((notice) => (
+                <p
+                  key={notice.kind}
+                  className="hint device-notice"
+                  role="status"
+                >
+                  {notice.message}
+                </p>
+              ))}
+            </div>
+          )}
 
           {!canSwitchDevice && (
             <p className="hint">录制进行中，设备已锁定；停止后才可切换。</p>
